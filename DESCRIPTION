@@ -1,0 +1,11 @@
+Type: Project
+Package: storymap
+Title: Storymap built with the Storymap-Studio (htmltools + mapgl + plotly)
+Version: 0.1.0
+Imports:
+    htmltools,
+    htmlwidgets,
+    jsonlite,
+    sf,
+    mapgl,
+    plotly

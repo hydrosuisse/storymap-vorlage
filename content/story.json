@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "settings": {
+    "languages": [
+      { "code": "de", "path": "de", "label": "Deutsch" },
+      { "code": "fr", "path": "fr", "label": "Français" }
+    ],
+    "originalLanguage": "de",
+    "rootRedirect": "browser",
+    "domain": "",
+    "basePath": "",
+    "decimalCommaFr": true,
+    "logo": "",
+    "logoAlt": "",
+    "logoHref": "",
+    "footer": { "de": "" }
+  },
+  "cover": {
+    "title": { "de": "Titel der Story" },
+    "subtitle": { "de": "Untertitel" },
+    "byline": "",
+    "image": "",
+    "alt": { "de": "" },
+    "credit": { "author": "", "year": "" },
+    "creditLabel": { "de": "Titelbild" }
+  },
+  "chapters": [
+    {
+      "id": "einleitung",
+      "nav": { "de": "Einleitung" },
+      "title": { "de": "Einleitung" },
+      "blocks": [
+        { "id": "text01", "type": "text", "html": { "de": "<p></p>" } }
+      ]
+    }
+  ],
+  "nachweise": { "overrides": {} }
+}

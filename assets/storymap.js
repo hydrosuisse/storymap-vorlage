@@ -1,0 +1,377 @@
+/* storymap.js — navigation highlighting + sidecar map tours for mapgl maps.
+   Static page; no server needed. */
+(function () {
+  "use strict";
+
+  var reduceMotion = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // folder of this script (assets/), to find assets/vendor/
+  var assetBase = (document.currentScript && document.currentScript.src || "")
+    .replace(/[^\/]*$/, "");
+
+  /* ---------- swisstopo 3D terrain --------------------------------------- */
+  // swisstopo publishes its terrain as quantized-mesh (ch.swisstopo.terrain.3d).
+  // The plugin in assets/vendor/ converts it on the fly into a MapLibre
+  // raster-dem source (256 px tiles, terrarium encoding, zoom 0-14).
+  var terrainSpec = null;
+  function swisstopoTerrain() {
+    if (!terrainSpec) {
+      terrainSpec = Promise.all([
+        import(assetBase + "vendor/quantized-mesh-decoder-1.2.8.js"),
+        import(assetBase + "vendor/maplibre-gl-3dtiles-terrain-0.1.0.js")
+      ]).then(function (mods) {
+        var decode = mods[0].default, plugin = mods[1];
+        return plugin.loadQuantizedMeshDataset(
+          "https://3d.geo.admin.ch/ch.swisstopo.terrain.3d/v1/layer.json",
+          { attribution: "Terrain: &copy; swisstopo",
+            boundsOverride: { west: 5.6, south: 45.5, east: 11.0, north: 48.2 },
+            maxZoom: 14 }
+        ).then(function (dataset) {
+          return plugin.registerQuantizedMeshTerrain(window.maplibregl,
+                                                     { dataset: dataset, decode: decode }).sourceSpec;
+        });
+      });
+    }
+    return terrainSpec;
+  }
+
+  function addTerrain(map, exaggeration) {
+    return swisstopoTerrain().then(function (spec) {
+      if (!map.getSource("swisstopo-terrain")) map.addSource("swisstopo-terrain", spec);
+      if (map.setMaxPitch) map.setMaxPitch(85);
+      map.setTerrain({ source: "swisstopo-terrain", exaggeration: exaggeration || 1.3 });
+    }).catch(function (e) {
+      if (window.console) console.warn("swisstopo terrain not available, map stays flat", e);
+    });
+  }
+
+  /* ---------- sticky nav: shadow + active section ------------------------ */
+  // ---- typography per language (de-CH, fr-CH), applied to all visible text --------
+  //  both: 2015-2026 -> 2015–2026, l'eau -> l’eau
+  //  de:   "Text" -> «Text», 95% -> 95 %
+  //  fr:   "texte" -> « texte » (narrow no-break spaces), espace fine before ; ! ? and %,
+  //        no-break space before :, optional decimal comma (2.2 -> 2,2; <html data-decimal="comma">)
+  //  The language of each text comes from the nearest lang="…" attribute.
+  var NNBSP = " ", NBSP = " ";
+  function typoText(v, lang, decimalComma) {
+    v = v.replace(/(\d)[   ]?-[   ]?(?=\d)/g, "$1–")
+         .replace(/([A-Za-zÀ-ÿ])'(?=[A-Za-zÀ-ÿ])/g, "$1’")
+         .replace(/[“„]/g, '"').replace(/”/g, '"');
+    if (lang === "fr") {
+      v = v.replace(/(^|[\s(\[—–])"(?=\S)/g, "$1«" + NNBSP)
+           .replace(/"/g, NNBSP + "»")
+           .replace(/«[  ]+/g, "«" + NNBSP).replace(/[  ]+»/g, NNBSP + "»")
+           .replace(/«(?![ ])/g, "«" + NNBSP).replace(/([^\s ])»/g, "$1" + NNBSP + "»")
+           .replace(/[  ]?([;!?])/g, function (m, p, off, str) {
+             return off === 0 && m === p ? p : NNBSP + p;
+           })
+           .replace(/(\S)[  ]?:(?!\/\/)(?!\d)/g, function (m, c) { return /\d/.test(c) && /\d/.test(m.slice(-1)) ? m : c + NBSP + ":"; })
+           .replace(/(\d)[   ]?%/g, "$1" + NNBSP + "%");
+      if (decimalComma) v = v.replace(/(^|[\s(])(\d+)\.(\d+)(?=$|[\s)%,;:!?  ])/g, "$1$2,$3");
+    } else {
+      v = v.replace(/(^|[\s(\[—–])"(?=\S)/g, "$1«").replace(/"/g, "»")
+           .replace(/(\d)[   ]?%/g, "$1" + NBSP + "%");
+    }
+    return v;
+  }
+  function initTypography() {
+    var skip = /^(CODE|PRE|SCRIPT|STYLE|TEXTAREA|SVG|IFRAME|INPUT)$/;
+    var decimalComma = document.documentElement.getAttribute("data-decimal") === "comma";
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        for (var e = n.parentNode; e && e !== document.body; e = e.parentNode) {
+          if (skip.test(e.nodeName.toUpperCase()) ||
+              (e.classList && (e.classList.contains("html-widget") || e.classList.contains("no-typo"))))
+            return NodeFilter.FILTER_REJECT;
+        }
+        var v = n.nodeValue;                                   // leave URLs alone
+        return /\S/.test(v) && !/:\/\/|www\.|\.html?\b/.test(v) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    });
+    var nodes = [], n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    nodes.forEach(function (t) {
+      var host = t.parentNode && t.parentNode.closest ? t.parentNode.closest("[lang]") : null;
+      var lang = ((host && host.getAttribute("lang")) || document.documentElement.lang || "de").slice(0, 2).toLowerCase();
+      var v = typoText(t.nodeValue, lang, decimalComma);
+      if (v !== t.nodeValue) t.nodeValue = v;
+    });
+  }
+  window.smTypoText = typoText;   // used by the Storymap-Studio preview
+
+  function initNav() {
+    var nav = document.querySelector(".sm-nav");
+    if (!nav) return;
+
+    var sentinel = document.createElement("div");
+    nav.parentNode.insertBefore(sentinel, nav);
+    new IntersectionObserver(function (e) {
+      nav.classList.toggle("is-stuck", !e[0].isIntersecting);
+    }).observe(sentinel);
+
+    var links = Array.prototype.slice.call(nav.querySelectorAll("a[data-target]"));
+    var targets = links
+      .map(function (a) { return document.getElementById(a.dataset.target); })
+      .filter(Boolean);
+
+    function update() {
+      var line = window.innerHeight * 0.3;
+      var current = null;
+      targets.forEach(function (t) {
+        if (t.getBoundingClientRect().top <= line) current = t.id;
+      });
+      links.forEach(function (a) {
+        var on = a.dataset.target === current;
+        a.classList.toggle("is-active", on);
+        if (on && a.scrollIntoView && nav.scrollWidth > nav.clientWidth) {
+          a.scrollIntoView({ block: "nearest", inline: "center" });
+        }
+      });
+    }
+    window.addEventListener("scroll", throttle(update, 100), { passive: true });
+    update();
+  }
+
+  /* ---------- sidecar map tours ------------------------------------------ */
+  // Resolve the maplibre/mapbox Map instance behind a mapgl htmlwidget.
+  function whenMapReady(id, cb) {
+    var tries = 0;
+    (function poll() {
+      var el = document.getElementById(id);
+      var map = null;
+      if (window.HTMLWidgets) {
+        var w = HTMLWidgets.find("#" + id);
+        if (w && typeof w.getMap === "function") map = w.getMap();
+      }
+      if (!map && el) map = el.map;
+      if (map) {
+        // mapgl adds its layers in the map's "load" handler; wait until idle
+        if (map.loaded && map.loaded()) return cb(map);
+        return map.once("idle", function () { cb(map); });
+      }
+      if (tries++ < 200) setTimeout(poll, 100);
+    })();
+  }
+
+  function setVisibility(map, ids, value) {
+    if (!ids) return;
+    ids.split(/\s+/).forEach(function (layer) {
+      if (layer && map.getLayer(layer)) {
+        map.setLayoutProperty(layer, "visibility", value);
+      }
+    });
+  }
+
+  function applySlide(map, slide) {
+    var view = {};
+    try { view = JSON.parse(slide.dataset.view || "{}"); } catch (e) {}
+    setVisibility(map, slide.dataset.hide, "none");
+    setVisibility(map, slide.dataset.show, "visible");
+    if (view.bounds && map.cameraForBounds) {
+      // frame an area: works for any map width; pitch/bearing applied on top
+      var b = view.bounds;
+      var cam = map.cameraForBounds([[b[0], b[1]], [b[2], b[3]]],
+        { padding: view.padding || 40, bearing: view.bearing || 0 });
+      if (cam) { view.center = [cam.center.lng, cam.center.lat]; view.zoom = cam.zoom; }
+    }
+    if (view.center || view.zoom != null) {
+      var opts = {};
+      ["center", "zoom", "pitch", "bearing"].forEach(function (k) {
+        if (view[k] != null) opts[k] = view[k];
+      });
+      if (reduceMotion) map.jumpTo(opts);
+      else { opts.duration = view.duration || 2500; opts.essential = true; map.flyTo(opts); }
+    }
+  }
+
+  // ---- inline maps with 3D terrain (sm_map(..., terrain = "swisstopo")) ----
+  function initMaps() {
+    document.querySelectorAll(".sm-map[data-terrain]").forEach(function (fig) {
+      var w = fig.querySelector(".html-widget");
+      if (!w || !w.id) return;
+      whenMapReady(w.id, function (m) { addTerrain(m, Number(fig.dataset.exaggeration)); });
+    });
+  }
+
+  function initSidecars() {
+    document.querySelectorAll(".sm-sidecar").forEach(function (sc) {
+      var slides = sc.querySelectorAll(".sm-slide");
+      var mapId = sc.dataset.map;
+      var map = null, pending = null, active = null;
+
+      whenMapReady(mapId, function (m) {
+        map = m;
+        if (map.resize) map.resize();
+        if (sc.dataset.terrain === "swisstopo") addTerrain(map, Number(sc.dataset.exaggeration));
+        if (pending) applySlide(map, pending);
+      });
+
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (!e.isIntersecting || e.target === active) return;
+          active = e.target;
+          slides.forEach(function (s) { s.classList.toggle("is-active", s === active); });
+          if (map) applySlide(map, active); else pending = active;
+        });
+      }, { rootMargin: "-45% 0px -45% 0px" });
+      slides.forEach(function (s) { io.observe(s); });
+      if (slides[0]) pending = slides[0];
+    });
+  }
+
+  /* ---------- lazy frames (charts, Shiny app) ----------------------------- */
+  function initFrames() {
+    var frames = Array.prototype.slice.call(document.querySelectorAll(".sm-frame iframe[data-src]"));
+    if (!frames.length) return;
+
+    function load(ifr) {
+      if (ifr.src) return;
+      ifr.addEventListener("load", function () {
+        ifr.closest(".sm-frame-box").classList.add("is-loaded");
+      });
+      ifr.src = ifr.dataset.src;
+    }
+
+    // frames with data-load="after_page": start `data-delay` ms after the page
+    // (images, maps, scripts) has finished loading
+    function afterPage() {
+      frames.forEach(function (f) {
+        if (f.dataset.load === "after_page") {
+          setTimeout(function () { load(f); }, Number(f.dataset.delay || 2000));
+        }
+      });
+    }
+    if (document.readyState === "complete") afterPage();
+    else window.addEventListener("load", afterPage);
+
+    // scrolling: lazy frames start 800 px before they come into view;
+    // after_page frames only if the reader actually reaches them before the delay
+    if ("IntersectionObserver" in window) {
+      function observer(margin) {
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.isIntersecting) { load(e.target); io.unobserve(e.target); }
+          });
+        }, { rootMargin: margin });
+        return io;
+      }
+      var ioLazy = observer("800px 0px"), ioVisible = observer("0px");
+      frames.forEach(function (f) {
+        (f.dataset.load === "after_page" ? ioVisible : ioLazy).observe(f);
+      });
+    } else {
+      frames.forEach(load);
+    }
+
+    // embedded pages report their height (assets/chart.js)
+    window.addEventListener("message", function (ev) {
+      var d = ev.data;
+      if (!d || d.type !== "sm-frame-height" || !d.height) return;
+      frames.forEach(function (f) {
+        if (f.contentWindow === ev.source && f.dataset.autoHeight === "true") {
+          f.closest(".sm-frame-box").style.height = d.height + "px";
+        }
+      });
+    });
+  }
+
+  /* ---------- image viewer (sm_slide_image, sm_image(zoom = TRUE)) -------- */
+  // ---- videos: YouTube/Vimeo/SWITCHtube load only after a click ------------
+  function initVideos() {
+    document.querySelectorAll(".sm-video-play[data-embed]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var f = document.createElement("iframe");
+        f.src = b.getAttribute("data-embed");
+        f.allow = "autoplay; fullscreen; picture-in-picture";
+        f.allowFullscreen = true;
+        f.title = b.getAttribute("aria-label") || "Video";
+        b.parentNode.appendChild(f);
+        b.remove();
+      });
+    });
+  }
+
+  // ---- language switch: keep the current chapter (#anchor) ----------------
+  function initLangSwitch() {
+    document.querySelectorAll(".sm-lang a").forEach(function (a) {
+      a.addEventListener("click", function () {
+        var active = document.querySelector(".sm-nav a.is-active");
+        var hash = location.hash || (active ? active.getAttribute("href") : "");
+        if (hash) a.href = a.getAttribute("href").split("#")[0] + hash;
+      });
+    });
+  }
+
+  function initLightbox() {
+    if (!document.querySelector(".sm-zoom")) return;
+
+    var box = document.createElement("dialog");
+    box.className = "sm-lightbox";
+    box.setAttribute("aria-label", "Bildansicht");
+    box.innerHTML =
+      '<button type="button" class="sm-lb-close" aria-label="Schliessen">&times;</button>' +
+      '<button type="button" class="sm-lb-prev" aria-label="Vorheriges Bild">&#8249;</button>' +
+      '<figure><img alt=""><figcaption class="sm-lb-caption"></figcaption></figure>' +
+      '<button type="button" class="sm-lb-next" aria-label="Nächstes Bild">&#8250;</button>';
+    document.body.appendChild(box);
+    var img = box.querySelector("img"), cap = box.querySelector(".sm-lb-caption");
+    var group = [], index = 0, opener = null;
+
+    function show(i) {
+      index = (i + group.length) % group.length;
+      var btn = group[index];
+      var fig = btn.closest("figure");
+      var fc = fig && fig.querySelector("figcaption");
+      img.src = btn.dataset.full;
+      img.alt = btn.querySelector("img").alt;
+      cap.innerHTML = fc ? fc.innerHTML : "";
+      cap.style.display = fc ? "" : "none";
+      box.classList.toggle("is-single", group.length < 2);
+    }
+    function open(btn) {
+      // images of the same slide (or the same figure) form one group
+      var scope = btn.closest(".sm-slide-card") || btn.closest("figure");
+      group = Array.prototype.slice.call(scope.querySelectorAll(".sm-zoom"));
+      opener = btn;
+      show(group.indexOf(btn));
+      document.documentElement.classList.add("sm-lb-open");
+      if (box.showModal) box.showModal(); else box.setAttribute("open", "");
+    }
+    function close() {
+      if (box.close) box.close(); else box.removeAttribute("open");
+    }
+    box.addEventListener("close", function () {
+      document.documentElement.classList.remove("sm-lb-open");
+      img.removeAttribute("src");
+      if (opener) opener.focus();
+    });
+
+    document.addEventListener("click", function (e) {
+      var btn = e.target.closest && e.target.closest(".sm-zoom");
+      if (btn) { e.preventDefault(); open(btn); }
+    });
+    box.querySelector(".sm-lb-close").addEventListener("click", close);
+    box.querySelector(".sm-lb-prev").addEventListener("click", function () { show(index - 1); });
+    box.querySelector(".sm-lb-next").addEventListener("click", function () { show(index + 1); });
+    box.addEventListener("click", function (e) {       // click on the dark background
+      if (e.target === box) close();
+    });
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowLeft" && group.length > 1) show(index - 1);
+      if (e.key === "ArrowRight" && group.length > 1) show(index + 1);
+    });
+  }
+
+  function throttle(fn, ms) {
+    var t = 0;
+    return function () {
+      var now = Date.now();
+      if (now - t > ms) { t = now; fn(); }
+    };
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { initTypography(); initNav(); initSidecars(); initFrames(); initLightbox(); initVideos(); initLangSwitch(); initMaps(); });
+  } else { initTypography(); initNav(); initSidecars(); initFrames(); initLightbox(); initVideos(); initLangSwitch(); initMaps(); }
+})();
