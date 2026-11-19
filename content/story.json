@@ -2,8 +2,16 @@
   "version": 1,
   "settings": {
     "languages": [
-      { "code": "de", "path": "de", "label": "Deutsch" },
-      { "code": "fr", "path": "fr", "label": "Français" }
+      {
+        "code": "de",
+        "path": "de",
+        "label": "Deutsch"
+      },
+      {
+        "code": "fr",
+        "path": "fr",
+        "label": "Français"
+      }
     ],
     "originalLanguage": "de",
     "rootRedirect": "browser",
@@ -13,26 +21,58 @@
     "logo": "",
     "logoAlt": "",
     "logoHref": "",
-    "footer": { "de": "" }
+    "footer": {
+      "de": ""
+    }
   },
   "cover": {
-    "title": { "de": "Titel der Story" },
-    "subtitle": { "de": "Untertitel" },
+    "title": {
+      "de": "Titel der Story"
+    },
+    "subtitle": {
+      "de": "Untertitel"
+    },
     "byline": "",
     "image": "",
-    "alt": { "de": "" },
-    "credit": { "author": "", "year": "" },
-    "creditLabel": { "de": "Titelbild" }
+    "alt": {
+      "de": ""
+    },
+    "credit": {
+      "author": "",
+      "year": ""
+    },
+    "creditLabel": {
+      "de": "Titelbild"
+    }
   },
   "chapters": [
     {
       "id": "einleitung",
-      "nav": { "de": "Einleitung" },
-      "title": { "de": "Einleitung" },
+      "nav": {
+        "de": "Einleitung"
+      },
+      "title": {
+        "de": "Einleitung"
+      },
       "blocks": [
-        { "id": "text01", "type": "text", "html": { "de": "<p></p>" } }
+        {
+          "id": "text01",
+          "type": "text",
+          "html": {
+            "de": "<p>Test-Text blblblblblbalabblablablab</p>"
+          }
+        },
+        {
+          "id": "texi3akih",
+          "type": "text",
+          "html": {
+            "de": "<p></p>"
+          }
+        }
       ]
     }
   ],
-  "nachweise": { "overrides": {} }
+  "nachweise": {
+    "overrides": {}
+  }
 }
